@@ -1,0 +1,22 @@
+# ROS2 / Build
+build/
+install/
+log/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+
+# AI Models & Data
+models/*.pt
+models/*.onnx
+data/
+*.log
+
+# OS
+.DS_Store

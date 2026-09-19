@@ -1,79 +1,194 @@
-# RADAR: Edge AI Perception & Command Dashboard
+# RADAR Perception Pipeline Integration Guide
 
-This repository contains the Edge AI Perception Node (Member-4) and the Command Center Dashboard (Members 5 & 6) for the RADAR drone prototype.
+This document outlines the finalized ROS 2 spatial perception architecture, message contracts, and integration steps for simulation and custom node environments.
 
-## System Architecture
+## 1. Architecture and Topic Interfaces
 
-The perception pipeline acts as a bridge between the drone's sensory hardware (simulation) and the command dashboard. It performs real-time YOLOv8 object detection, fuses the bounding box data with live odometry, and routes structured JSON events to both a live ROS 2 topic and an offline fault-tolerant cache.
+The `perception_node` operates as a standalone ROS 2 node using YOLO-World (v8s) for object detection and MiDaS (Small) for monocular depth estimation.
 
-1. **Input:** ROS 2 Image and Odometry topics.
-2. **Processing:** YOLOv8 Nano (`yolov8n.pt`) via OpenCV Bridge.
-3. **Storage:** JSON Lines (`.jsonl`) append-only offline queue.
-4. **Output:** FastAPI WebSocket server broadcasting to a Leaflet/Tailwind HTML frontend.
+### Subscribed Topics (Inputs)
 
----
+To feed data into the perception node, your simulation or hardware nodes must publish to the following standard topics:
 
-## Member-3 Integration Contract
+- `/camera/image_raw` (`sensor_msgs/msg/Image`): Expects standard BGR8 image matrices.
+- `/odom` (`nav_msgs/msg/Odometry`): Expects absolute or localized positioning to tag spatial coordinates to detections.
 
-To successfully interface the Gazebo simulation with this perception pipeline, Member-3 must configure their simulation nodes to broadcast to the following specific ROS 2 topics.
+### Published Topics (Outputs)
 
-### Required Inputs (From Simulation -> Perception Node)
+The node processes the synchronized frames and publishes alert data:
 
-- **Topic:** `/camera/image_raw`
-  - **Type:** `sensor_msgs/msg/Image`
-  - **Description:** The downward-facing camera feed from the Gazebo drone model.
-- **Topic:** `/odom`
-  - **Type:** `nav_msgs/msg/Odometry`
-  - **Description:** The live spatial coordinates (x, y, z) of the drone used for geo-tagging detections.
+- `/telemetry/alerts` (`std_msgs/msg/String`): Outputs a serialized JSON payload containing the spatial bounding box, confidence, median disparity depth, and the drone's XYZ coordinates at the time of detection.
 
-### Provided Outputs (From Perception Node -> Simulation/Other)
+### JSON Payload Contract
 
-- **Topic:** `/telemetry/alerts`
-  - **Type:** `std_msgs/msg/String`
-  - **Description:** A JSON-formatted string containing target class, confidence, bounding box, and location. Member-3 may subscribe to this if the flight controller requires target-based navigation adjustments.
-
----
-
-## Setup & Execution Instructions
-
-### 1. Environment Preparation
-
-The system requires a Python virtual environment to isolate the AI dependencies from the global ROS 2 Humble installation.
-
-```bash
-cd ~/radar_drone_ws
-python3 -m venv .venv
-source .venv/bin/activate
-pip install ultralytics fastapi uvicorn websockets
+```json
+{
+  "timestamp": "1789790177",
+  "drone_id": "RADAR-01",
+  "detection": {
+    "class": "bus",
+    "confidence": 0.87,
+    "relative_depth": 460.2,
+    "bbox": {
+      "x_min": 0,
+      "y_min": 200,
+      "x_max": 640,
+      "y_max": 480
+    }
+  },
+  "location": {
+    "x": -25.0,
+    "y": 15.5,
+    "z": 4.0
+  },
+  "source": "YOLO-World + MiDaS"
+}
 ```
 
-### 2. Building the Workspace
+> **Note:** All payloads are also appended locally to `~/radar_drone_ws/data/offline_queue.jsonl` for offline dashboard synchronization or telemetry backup.
+
+## 2. Adapting for Custom Namespaces and Simulations
+
+If your simulation uses custom namespaces or different topic names—for example, `/uav1/front_cam/image` instead of `/camera/image_raw`—you do not need to rewrite the Python source code.
+
+Use ROS 2 topic remapping at runtime to bridge your custom simulator nodes to the perception node.
+
+### Example Topic Remapping
+
+```bash
+ros2 run radar_perception perception_node --ros-args \
+  -r /camera/image_raw:=/your_custom_sim/camera/image \
+  -r /odom:=/your_custom_sim/odometry
+```
+
+If you need to change the tracked target classes from `["person", "bus"]` to custom simulation hazards such as `["fire", "spill"]`, modify the `self.target_classes` array in:
+
+```text
+~/radar_drone_ws/src/radar_perception/radar_perception/perception_node.py
+```
+
+Then rebuild the package.
+
+## 3. Integrating the Local SLAM Map with the Dashboard
+
+The React command center dashboard visualizes live incident feeds overlaid on a 2D occupancy grid. To ensure your simulation's SLAM data routes correctly to the UI:
+
+1. **SLAM Node Configuration**
+
+   Ensure your SLAM implementation, such as `slam_toolbox` or `cartographer`, actively publishes to the standard `/map` topic using the `nav_msgs/msg/OccupancyGrid` message type.
+
+2. **Coordinate Frame Alignment**
+
+   The `location` XYZ coordinates generated by the perception node rely on the `/odom` topic. Your simulation's `tf` tree must maintain a valid transform:
+
+   ```text
+   map → odom → base_link
+   ```
+
+   Replace `base_link` with your drone's frame if necessary. This allows the React dashboard to plot detections accurately on the map grid.
+
+3. **Bridge Verification**
+
+   The backend API using FastAPI or rosbridge expects the `/map` topic to remain in its default namespace. If your SLAM node publishes to a custom namespace such as `/sim/map`, remap it to the global `/map` topic so the dashboard's WebSocket listener can ingest and render the grid.
+
+## 4. Extraction and Execution
+
+Follow these steps to pull the latest changes, build the workspace, and verify the pipeline using the included static test publisher before connecting your simulation.
+
+### Step 1: Pull and Build
 
 ```bash
 cd ~/radar_drone_ws
+git pull origin main
 colcon build --packages-select radar_perception
 source install/setup.bash
-export PYTHONPATH=~/radar_drone_ws/.venv/lib/python3.10/site-packages:$PYTHONPATH
 ```
 
-### 3. Launching the System
+### Step 2: Launch the Perception Node
 
-The system requires two separate terminals running concurrently (alongside the Gazebo simulation).
-
-**Terminal A: Perception Node**
+In **Terminal 1**, activate your virtual environment to ensure `ultralytics` and `torch` are available, then run the node:
 
 ```bash
-source ~/radar_drone_ws/install/setup.bash
-export PYTHONPATH=~/radar_drone_ws/.venv/lib/python3.10/site-packages:$PYTHONPATH
+cd ~/radar_drone_ws
+source .venv/bin/activate
+source install/setup.bash
 ros2 run radar_perception perception_node
 ```
 
-**Terminal B: Command Dashboard**
+### Step 3: Verify with the Spatial Test Publisher
+
+In **Terminal 2**, use the provided test script. This script publishes static odometry and dummy frames using `real_bus.jpg` to the default topics, simulating a live camera feed.
 
 ```bash
-cd ~/radar_drone_ws/dashboard
-source ~/radar_drone_ws/.venv/bin/activate
-uvicorn app:app --host 0.0.0.0 --port 8000
+cd ~/radar_drone_ws
+source .venv/bin/activate
+source install/setup.bash
+python3 test_spatial_pub.py
 ```
 
-Access the dashboard at: `http://localhost:8000`
+Check the terminal output of the `perception_node`. You should see successful disparity calculations and positional logging.
+
+Once verified:
+
+1. Terminate `test_spatial_pub.py`.
+2. Launch your custom simulator nodes.
+3. Apply the appropriate topic remapping.
+
+## 5. Launching the Command Center Dashboard
+
+To visualize live telemetry, the SLAM map, and hazard alerts, start the ROS bridge, backend API, and React frontend.
+
+> **Note for Team Member 3:** The dashboard relies on `rosbridge_server` to translate ROS 2 topics such as `/map` and `/telemetry/alerts` into WebSocket messages.
+>
+> Install it using:
+>
+> ```bash
+> sudo apt install ros-humble-rosbridge-suite
+> ```
+
+### Step 1: Start the ROS Bridge
+
+In **Terminal 3**, run:
+
+```bash
+source /opt/ros/humble/setup.bash
+ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+```
+
+This opens the WebSocket connection on the default port `9090`, which the dashboard uses to listen to the ROS 2 network.
+
+### Step 2: Start the Backend API
+
+In **Terminal 4**, navigate to the backend directory and start the Uvicorn server:
+
+```bash
+cd ~/radar_drone_ws/backend  # Adjust to your backend folder path
+source ../.venv/bin/activate
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+The FastAPI backend can serve the `offline_queue.jsonl` data and handle external API requests.
+
+### Step 3: Start the React Frontend
+
+In **Terminal 5**, navigate to the embedded `radar-command-center` or `dashboard` directory:
+
+```bash
+cd ~/radar_drone_ws/radar-command-center
+npm install  # Only required the first time
+npm run dev
+```
+
+### Step 4: View the Dashboard
+
+Once the frontend compiles, open the following address in your browser:
+
+```text
+http://localhost:5173
+```
+
+If everything is connected correctly:
+
+- The SLAM map will populate in the center view.
+- The incident feed on the left will update as the `perception_node` publishes hazards.
+- Each incident will display its timestamp, confidence, and estimated depth.

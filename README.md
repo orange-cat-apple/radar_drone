@@ -240,26 +240,68 @@ These files were utilized during the development and calibration of the models. 
 * **`AGENTS.md`, `README.md`, `.gitignore**`: Project documentation and Git configurations.
 
 
-## 7. Integrating 3D OctoMap (.bt) Files
+## 7. Live Dashboard Integration (Connecting ROS to React)
 
-If your simulation exports a 3D environment as a binary tree (`.bt`) file, you can load it into the existing React dashboard without modifying the frontend code. The dashboard natively ingests a 2D `OccupancyGrid` via the `/map` topic. You will use `octomap_server` to automatically project the 3D `.bt` file down to a compatible 2D grid.
+The current `App.jsx` in the `radar-command-center` submodule is configured with static mock data (`gazebo-map.png` and `mockData.js`). To visualize the live YOLO-World detections and a 3D `.bt` OctoMap from your simulation, you must connect the React frontend to the ROS 2 WebSocket bridge.
 
-### Execution Steps
+### Step 1: Install ROS Web Dependencies
 
-1. **Install OctoMap Server:**
+In your terminal, navigate to the React dashboard folder and install the ROS JavaScript libraries required to parse live topics and render occupancy grids:
+
+```bash
+cd ~/radar_drone_ws/radar-command-center
+npm install roslib ros2d
+
+```
+
+### Step 2: Project the 3D `.bt` Map to a 2D Grid
+
+Leaflet is a 2D mapping engine. To display your 3D OctoMap (`.bt`) in the dashboard, run the `octomap_server` node in your ROS environment to flatten it into a standard 2D `/map` topic (`nav_msgs/OccupancyGrid`).
+
 ```bash
 sudo apt install ros-humble-octomap-server
+ros2 run octomap_server octomap_server_node --ros-args -p octomap_path:=/path/to/your_sim.bt -p frame_id:=map -r /projected_map:=/map
 
 ```
 
+### Step 3: Update `App.jsx` for Live Telemetry
 
-2. **Publish the Map:**
-Run the server node and point it to your `.bt` file. By default, `octomap_server` projects the 3D map onto the `/projected_map` topic. Remap this to `/map` so `rosbridge_server` and the frontend dashboard pick it up seamlessly.
-```bash
-ros2 run octomap_server octomap_server_node --ros-args -p octomap_path:=/absolute/path/to/environment.bt -p frame_id:=map -r /projected_map:=/map
+You will need to replace the static `<ImageOverlay url="/gazebo-map.png"/>` and the `mockData` imports in `App.jsx` with a live `roslib` connection.
+
+Add the following connection logic to your component to listen to the ROS bridge:
+
+```javascript
+import * as ROSLIB from 'roslib';
+
+// Inside your App component:
+useEffect(() => {
+  // 1. Connect to the ROS Bridge (Terminal 3)
+  const ros = new ROSLIB.Ros({
+    url: 'ws://localhost:9090'
+  });
+
+  ros.on('connection', () => setIsOffline(false));
+  ros.on('error', () => setIsOffline(true));
+
+  // 2. Subscribe to the Perception Alerts
+  const alertListener = new ROSLIB.Topic({
+    ros: ros,
+    name: '/telemetry/alerts',
+    messageType: 'std_msgs/String'
+  });
+
+  alertListener.subscribe((message) => {
+    const payload = JSON.parse(message.data);
+    // Map the payload to your React state here
+    setIncidents(prev => [...prev, payload]); 
+  });
+
+  return () => {
+    alertListener.unsubscribe();
+    ros.close();
+  };
+}, []);
 
 ```
 
-
-
-Once running alongside your `rosbridge_server`, the dashboard at `http://localhost:5173` will automatically render the `.bt` file's 2D projection as the base grid for tracking anomalies.
+*Note: To render the projected OctoMap inside the Leaflet `<MapContainer>`, you will need to mount a `ROS2D.Viewer` instance to a specific DOM element, or use a custom Leaflet canvas overlay that continuously draws the `/map` topic data.*

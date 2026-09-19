@@ -10,16 +10,16 @@ The `perception_node` operates as a standalone ROS 2 node using YOLO-World (v8s)
 
 To feed data into the perception node, your simulation or hardware nodes must publish to the following standard topics:
 
-- `/camera/image_raw` (`sensor_msgs/msg/Image`): Expects standard BGR8 image matrices.
-- `/odom` (`nav_msgs/msg/Odometry`): Expects absolute or localized positioning to tag spatial coordinates to detections.
+* `/camera/image_raw` (`sensor_msgs/msg/Image`): Expects standard BGR8 image matrices.
+* `/odom` (`nav_msgs/msg/Odometry`): Expects absolute or localized positioning to tag spatial coordinates to detections.
 
 ### Published Topics (Outputs)
 
 The node processes the synchronized frames and publishes alert data:
 
-- `/telemetry/alerts` (`std_msgs/msg/String`): Outputs a serialized JSON payload containing the spatial bounding box, confidence, median disparity depth, and the drone's XYZ coordinates at the time of detection.
+* `/telemetry/alerts` (`std_msgs/msg/String`): Outputs a serialized JSON payload containing the spatial bounding box, confidence, median disparity depth, and the drone's XYZ coordinates at the time of detection.
 
-### JSON Payload Contract
+**JSON Payload Contract:**
 
 ```json
 {
@@ -43,265 +43,121 @@ The node processes the synchronized frames and publishes alert data:
   },
   "source": "YOLO-World + MiDaS"
 }
+
 ```
 
 > **Note:** All payloads are also appended locally to `~/radar_drone_ws/data/offline_queue.jsonl` for offline dashboard synchronization or telemetry backup.
 
 ## 2. Adapting for Custom Namespaces and Simulations
 
-If your simulation uses custom namespaces or different topic names—for example, `/uav1/front_cam/image` instead of `/camera/image_raw`—you do not need to rewrite the Python source code.
-
-Use ROS 2 topic remapping at runtime to bridge your custom simulator nodes to the perception node.
-
-### Example Topic Remapping
+If your simulation uses custom namespaces (e.g., `/uav1/front_cam/image` instead of `/camera/image_raw`), use ROS 2 topic remapping at runtime:
 
 ```bash
-ros2 run radar_perception perception_node --ros-args \
-  -r /camera/image_raw:=/your_custom_sim/camera/image \
-  -r /odom:=/your_custom_sim/odometry
+ros2 launch radar_perception start_pipeline.launch.py \
+  --ros-args -r /camera/image_raw:=/your_custom_sim/camera/image \
+             -r /odom:=/your_custom_sim/odometry
+
 ```
 
-If you need to change the tracked target classes from `["person", "bus"]` to custom simulation hazards such as `["fire", "spill"]`, modify the `self.target_classes` array in:
+If you need to change tracked target classes from `["person", "bus"]` to custom simulation hazards (e.g., `["fire", "spill"]`), modify the `self.target_classes` array in `~/radar_drone_ws/src/radar_perception/radar_perception/perception_node.py` and rebuild.
+
+## 3. Map Integration (2D SLAM & 3D OctoMap)
+
+The React dashboard visualizes live incident feeds overlaid on a 2D occupancy grid (`/map`).
+
+**For 2D SLAM (slam_toolbox, cartographer):**
+Ensure your node publishes to `/map` (`nav_msgs/msg/OccupancyGrid`) and maintains a valid `tf` tree (`map → odom → base_link`).
+
+**For 3D Simulation Environments (.bt files):**
+If your simulation exports a 3D environment as a binary tree (`.bt`) file, you can project it into a 2D grid for the dashboard using `octomap_server`:
+
+```bash
+sudo apt install ros-humble-octomap-server
+ros2 run octomap_server octomap_server_node --ros-args -p octomap_path:=/absolute/path/to/environment.bt -p frame_id:=map -r /projected_map:=/map
+
+```
+
+## 4. Repository File Structure & Artifact Reference
 
 ```text
-~/radar_drone_ws/src/radar_perception/radar_perception/perception_node.py
+radar_drone/
+├── data/
+│   ├── dummy_pub.py                     # Offline data generation script
+│   └── offline_queue.jsonl              # Local detection persistence log
+├── radar-command-center/                # React dashboard (tracked directory)
+│   ├── src/
+│   │   ├── App.jsx                      # UI entrypoint with live ROS WebSocket bridge & coordinate transform
+│   │   ├── main.jsx
+│   │   └── mockData.js                  # Fallback mock telemetry
+│   ├── package.json                     # Frontend dependencies including roslib
+│   └── vite.config.js
+├── src/
+│   └── radar_perception/
+│       ├── launch/
+│       │   └── start_pipeline.launch.py # Orchestrates perception_node & rosbridge_websocket
+│       ├── radar_perception/
+│       │   ├── __init__.py
+│       │   └── perception_node.py       # Core YOLO-World + MiDaS ROS 2 perception node
+│       ├── package.xml
+│       ├── setup.cfg
+│       └── setup.py                     # Configured with launch file installation paths
+├── test_spatial_pub.py                  # Standalone mock camera and odometry publisher
+├── bus.jpg                              # Calibration and testing visual asset
+├── fire.jpg                             # Secondary detection test frame
+└── real_bus.jpg                         # Benchmark verification frame
+
 ```
 
-Then rebuild the package.
+## 5. Execution Workflow (Team Member 3 Integration)
 
-## 3. Integrating the Local SLAM Map with the Dashboard
+The pipeline and frontend have been fully pre-configured. The dashboard submodule has been converted to a standard directory (resolving 403 Git errors), and the React UI is natively hooked up to the ROS WebSocket bridge with dynamic metric-to-pixel coordinate scaling.
 
-The React command center dashboard visualizes live incident feeds overlaid on a 2D occupancy grid. To ensure your simulation's SLAM data routes correctly to the UI:
+To run the full stack with simulation data, follow these exact steps:
 
-1. **SLAM Node Configuration**
-
-   Ensure your SLAM implementation, such as `slam_toolbox` or `cartographer`, actively publishes to the standard `/map` topic using the `nav_msgs/msg/OccupancyGrid` message type.
-
-2. **Coordinate Frame Alignment**
-
-   The `location` XYZ coordinates generated by the perception node rely on the `/odom` topic. Your simulation's `tf` tree must maintain a valid transform:
-
-   ```text
-   map → odom → base_link
-   ```
-
-   Replace `base_link` with your drone's frame if necessary. This allows the React dashboard to plot detections accurately on the map grid.
-
-3. **Bridge Verification**
-
-   The backend API using FastAPI or rosbridge expects the `/map` topic to remain in its default namespace. If your SLAM node publishes to a custom namespace such as `/sim/map`, remap it to the global `/map` topic so the dashboard's WebSocket listener can ingest and render the grid.
-
-## 4. Extraction and Execution
-
-Follow these steps to pull the latest changes, build the workspace, and verify the pipeline using the included static test publisher before connecting your simulation.
-
-### Step 1: Pull and Build
+### Step 1: Pull Latest Artifacts and Build
 
 ```bash
 cd ~/radar_drone_ws
 git pull origin main
+source .venv/bin/activate
 colcon build --packages-select radar_perception
 source install/setup.bash
+
 ```
 
-### Step 2: Launch the Perception Node
+### Step 2: Start Core ROS 2 Pipeline (Terminal 1)
 
-In **Terminal 1**, activate your virtual environment to ensure `ultralytics` and `torch` are available, then run the node:
+This unified launch file automatically spins up both the YOLO/MiDaS perception node and the WebSocket bridge (port 9090) required by the React dashboard.
 
 ```bash
 cd ~/radar_drone_ws
 source .venv/bin/activate
 source install/setup.bash
-ros2 run radar_perception perception_node
+ros2 launch radar_perception start_pipeline.launch.py
+
 ```
 
-### Step 3: Verify with the Spatial Test Publisher
+### Step 3: Start Command Center Dashboard (Terminal 2)
 
-In **Terminal 2**, use the provided test script. This script publishes static odometry and dummy frames using `real_bus.jpg` to the default topics, simulating a live camera feed.
+```bash
+cd ~/radar_drone_ws/radar-command-center
+npm install
+npm run dev
+
+```
+
+Navigate to `http://localhost:5173`. The connection badge should read **"Connected to ROS Bridge"**.
+
+### Step 4: Stream Simulation Data or Verify (Terminal 3)
+
+Run the built-in verification script to ensure alerts plot correctly on the UI:
 
 ```bash
 cd ~/radar_drone_ws
 source .venv/bin/activate
 source install/setup.bash
 python3 test_spatial_pub.py
-```
-
-Check the terminal output of the `perception_node`. You should see successful disparity calculations and positional logging.
-
-Once verified:
-
-1. Terminate `test_spatial_pub.py`.
-2. Launch your custom simulator nodes.
-3. Apply the appropriate topic remapping.
-
-## 5. Launching the Command Center Dashboard
-
-To visualize live telemetry, the SLAM map, and hazard alerts, start the ROS bridge, backend API, and React frontend.
-
-> **Note for Team Member 3:** The dashboard relies on `rosbridge_server` to translate ROS 2 topics such as `/map` and `/telemetry/alerts` into WebSocket messages.
->
-> Install it using:
->
-> ```bash
-> sudo apt install ros-humble-rosbridge-suite
-> ```
-
-### Step 1: Start the ROS Bridge
-
-In **Terminal 3**, run:
-
-```bash
-source /opt/ros/humble/setup.bash
-ros2 launch rosbridge_server rosbridge_websocket_launch.xml
-```
-
-This opens the WebSocket connection on the default port `9090`, which the dashboard uses to listen to the ROS 2 network.
-
-### Step 2: Start the Backend API
-
-In **Terminal 4**, navigate to the backend directory and start the Uvicorn server:
-
-```bash
-cd ~/radar_drone_ws/backend  # Adjust to your backend folder path
-source ../.venv/bin/activate
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
-The FastAPI backend can serve the `offline_queue.jsonl` data and handle external API requests.
-
-### Step 3: Start the React Frontend
-
-In **Terminal 5**, navigate to the embedded `radar-command-center` or `dashboard` directory:
-
-```bash
-cd ~/radar_drone_ws/radar-command-center
-npm install  # Only required the first time
-npm run dev
-```
-
-### Step 4: View the Dashboard
-
-Once the frontend compiles, open the following address in your browser:
-
-```text
-http://localhost:5173
-```
-
-If everything is connected correctly:
-
-- The SLAM map will populate in the center view.
-- The incident feed on the left will update as the `perception_node` publishes hazards.
-- Each incident will display its timestamp, confidence, and estimated depth.
-
-
-## 6. Repository File Structure & Integration Checklist
-
-Below is the comprehensive file structure of the workspace. This section breaks down exactly which files Team Member 3 needs to modify, run, or ignore when integrating the custom simulation nodes.
-
-### 📦 Core Files (Essential for Team Member 3)
-
-These are the primary files required to execute the pipeline and connect the simulation data.
-
-* **`src/radar_perception/radar_perception/perception_node.py`**: The main spatial perception ROS 2 node containing the YOLO-World and MiDaS inference logic. **Action:** Run this node alongside your simulation. If your simulation features custom hazard types, you must edit the `self.target_classes` array inside this file and rebuild.
-
-
-* **`radar-command-center/`**: The primary React command center UI submodule. **Action:** Run this to visualize the SLAM map and real-time hazard alerts generated by your simulation.
-
-
-* **`test_spatial_pub.py`**: The static image and odometry publisher. **Action:** Run this *before* connecting your simulation to verify the environment and UI are fully functional.
-
-
-* **`src/radar_perception/package.xml`, `setup.cfg`, `setup.py**`: The ROS 2 build configuration files. **Action:** Leave these as-is; they are executed automatically when you run `colcon build`.
-
-
-
-### 🛠️ Testing & Debugging (Optional for Team Member 3)
-
-These files were utilized during the development and calibration of the models. You can safely ignore them unless you need to troubleshoot the underlying PyTorch inference engine.
-
-* **`debug_yolo.py`, `midas_roi_test.py`, `model_test.py**`: Isolated test scripts for running inference without the ROS 2 overhead.
-
-
-* **`bus.jpg`, `fire.jpg`, `real_bus.jpg**`: Static image assets used by the debug scripts and the test publisher to simulate drone camera frames.
-
-
-* **`data/dummy_pub.py`**: An alternative offline data generation script.
-
-
-
-### 📁 Legacy & Miscellaneous (Ignore)
-
-* **`dashboard/`**: Contains an `app.py` and `index.html`. **Action:** Ignore. This is a legacy or lightweight web interface. Use `radar-command-center` instead.
-
-
-* **`src/radar_perception/test/`**: Contains standard ROS 2 linting and format tests (`test_copyright.py`, `test_flake8.py`, `test_pep257.py`). **Action:** Ignore.
-
-
-* **`AGENTS.md`, `README.md`, `.gitignore**`: Project documentation and Git configurations.
-
-
-## 7. Live Dashboard Integration (Connecting ROS to React)
-
-The current `App.jsx` in the `radar-command-center` submodule is configured with static mock data (`gazebo-map.png` and `mockData.js`). To visualize the live YOLO-World detections and a 3D `.bt` OctoMap from your simulation, you must connect the React frontend to the ROS 2 WebSocket bridge.
-
-### Step 1: Install ROS Web Dependencies
-
-In your terminal, navigate to the React dashboard folder and install the ROS JavaScript libraries required to parse live topics and render occupancy grids:
-
-```bash
-cd ~/radar_drone_ws/radar-command-center
-npm install roslib ros2d
 
 ```
 
-### Step 2: Project the 3D `.bt` Map to a 2D Grid
-
-Leaflet is a 2D mapping engine. To display your 3D OctoMap (`.bt`) in the dashboard, run the `octomap_server` node in your ROS environment to flatten it into a standard 2D `/map` topic (`nav_msgs/OccupancyGrid`).
-
-```bash
-sudo apt install ros-humble-octomap-server
-ros2 run octomap_server octomap_server_node --ros-args -p octomap_path:=/path/to/your_sim.bt -p frame_id:=map -r /projected_map:=/map
-
-```
-
-### Step 3: Update `App.jsx` for Live Telemetry
-
-You will need to replace the static `<ImageOverlay url="/gazebo-map.png"/>` and the `mockData` imports in `App.jsx` with a live `roslib` connection.
-
-Add the following connection logic to your component to listen to the ROS bridge:
-
-```javascript
-import * as ROSLIB from 'roslib';
-
-// Inside your App component:
-useEffect(() => {
-  // 1. Connect to the ROS Bridge (Terminal 3)
-  const ros = new ROSLIB.Ros({
-    url: 'ws://localhost:9090'
-  });
-
-  ros.on('connection', () => setIsOffline(false));
-  ros.on('error', () => setIsOffline(true));
-
-  // 2. Subscribe to the Perception Alerts
-  const alertListener = new ROSLIB.Topic({
-    ros: ros,
-    name: '/telemetry/alerts',
-    messageType: 'std_msgs/String'
-  });
-
-  alertListener.subscribe((message) => {
-    const payload = JSON.parse(message.data);
-    // Map the payload to your React state here
-    setIncidents(prev => [...prev, payload]); 
-  });
-
-  return () => {
-    alertListener.unsubscribe();
-    ros.close();
-  };
-}, []);
-
-```
-
-*Note: To render the projected OctoMap inside the Leaflet `<MapContainer>`, you will need to mount a `ROS2D.Viewer` instance to a specific DOM element, or use a custom Leaflet canvas overlay that continuously draws the `/map` topic data.*
+*Once verified, terminate the test script and launch your simulation environment, ensuring it publishes to `/camera/image_raw` and `/odom` (or use the remap arguments described in Section 2).*

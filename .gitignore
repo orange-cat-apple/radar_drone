@@ -1,22 +1,17 @@
-# ROS2 / Build
+# Python and Virtual Environments
+.venv/
+__pycache__/
+*.pyc
+
+# ROS 2 Build Artifacts
 build/
 install/
 log/
-.vscode/
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.venv/
-venv/
+# AI Models & Large Data
+*.pt
+data/person_test.jpg
+data/offline_queue.jsonl
 
-# AI Models & Data
-models/*.pt
-models/*.onnx
-data/
-*.log
-
-# OS
+# OS generated files
 .DS_Store

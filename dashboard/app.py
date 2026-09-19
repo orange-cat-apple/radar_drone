@@ -1,14 +1,19 @@
-import asyncio
 import os
+import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
-FILE_PATH = '/home/fullord/radar_drone_ws/data/offline_queue.jsonl'
 
-@app.get("/")
-async def get_index():
-    return FileResponse("index.html")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+FILE_PATH = '/home/fullord/radar_drone_ws/data/offline_queue.jsonl'
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -25,6 +30,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 if not line:
                     await asyncio.sleep(0.1)
                     continue
-                await websocket.send_text(line)
+                
+                clean_line = line.strip()
+                if clean_line:
+                    await websocket.send_text(clean_line)
+                    
     except WebSocketDisconnect:
         pass

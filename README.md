@@ -238,3 +238,28 @@ These files were utilized during the development and calibration of the models. 
 
 
 * **`AGENTS.md`, `README.md`, `.gitignore**`: Project documentation and Git configurations.
+
+
+## 7. Integrating 3D OctoMap (.bt) Files
+
+If your simulation exports a 3D environment as a binary tree (`.bt`) file, you can load it into the existing React dashboard without modifying the frontend code. The dashboard natively ingests a 2D `OccupancyGrid` via the `/map` topic. You will use `octomap_server` to automatically project the 3D `.bt` file down to a compatible 2D grid.
+
+### Execution Steps
+
+1. **Install OctoMap Server:**
+```bash
+sudo apt install ros-humble-octomap-server
+
+```
+
+
+2. **Publish the Map:**
+Run the server node and point it to your `.bt` file. By default, `octomap_server` projects the 3D map onto the `/projected_map` topic. Remap this to `/map` so `rosbridge_server` and the frontend dashboard pick it up seamlessly.
+```bash
+ros2 run octomap_server octomap_server_node --ros-args -p octomap_path:=/absolute/path/to/environment.bt -p frame_id:=map -r /projected_map:=/map
+
+```
+
+
+
+Once running alongside your `rosbridge_server`, the dashboard at `http://localhost:5173` will automatically render the `.bt` file's 2D projection as the base grid for tracking anomalies.
